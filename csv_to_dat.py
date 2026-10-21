@@ -15,12 +15,12 @@ name. time_start is ASSUMED to mean Unix seconds, as in the previous version.
 --utc-offset defaults to +09:00 (Japan); fractional seconds are discarded.
 The >Q header field is an unsigned 64-bit integer, not a floating-point time.
 
-Payload dtype is fixed to np.int16 (native byte order, little-endian on Windows
+Payload dtype is fixed to np.float32 (native byte order, little-endian on Windows
 and standard x86 Linux). This is independent of the big-endian header.
 Default payload layout is channel-sample (CSV orientation in C order).
 Use --payload-layout sample-channel only if your reader requires a transpose.
-Fractional values are truncated toward zero, without scaling or normalization.
-Out-of-range values, NaN/Inf, and CSVs with a channel count other than 500 fail;
+Fractional values are retained to float32 precision, without scaling or normalization.
+Values outside the float32 range, NaN/Inf, and CSVs with a channel count other than 500 fail;
 no clipping, padding, or cropping is performed.
 
 Usage:
@@ -52,7 +52,7 @@ import numpy as np
 
 HEADER_SIZE = 36
 CHANNEL_COUNT = 500
-PAYLOAD_DTYPE = np.dtype(np.int16)
+PAYLOAD_DTYPE = np.dtype(np.float32)
 LAYOUTS = ("channel-sample", "sample-channel")
 
 
@@ -110,7 +110,7 @@ def build_header(*, time_start, template=None):
 
 
 def write_dat(array, output_path, *, time_start, payload_layout="channel-sample", template=None):
-    """Write fixed np.int16 data and verify serialized bytes before final rename."""
+    """Write fixed np.float32 data and verify serialized bytes before final rename."""
     if payload_layout not in LAYOUTS:
         raise ValueError(f"payload_layout must be one of {LAYOUTS}")
     array = np.asarray(array, dtype=np.float64)
@@ -118,12 +118,11 @@ def write_dat(array, output_path, *, time_start, payload_layout="channel-sample"
         raise ValueError("Payload must be a finite, nonempty 2D array")
     if array.shape[0] != CHANNEL_COUNT:
         raise ValueError(f"Expected {CHANNEL_COUNT} channels, got {array.shape[0]}")
-    limits = np.iinfo(np.int16)
-    if np.any(array < limits.min) or np.any(array > limits.max):
-        raise ValueError("Values outside np.int16 range [-32768, 32767]; no clipping applied")
+    limits = np.finfo(PAYLOAD_DTYPE)
+    if np.any(array < -limits.max) or np.any(array > limits.max):
+        raise ValueError("Values outside np.float32 range; no clipping applied")
     oriented = array if payload_layout == "channel-sample" else array.T
-    payload = np.ascontiguousarray(oriented, dtype=np.int16)
-    fractional_count = int(np.count_nonzero(array != np.trunc(array)))
+    payload = np.ascontiguousarray(oriented, dtype=PAYLOAD_DTYPE)
     header = build_header(time_start=time_start, template=template)
     output_path = Path(output_path)
     if output_path.suffix.lower() != ".dat":
@@ -142,7 +141,7 @@ def write_dat(array, output_path, *, time_start, payload_layout="channel-sample"
         with tmp_path.open("rb") as f:
             if f.read(HEADER_SIZE) != header:
                 raise ValueError("Header verification failed")
-            recovered = np.fromfile(f, dtype=np.int16)
+            recovered = np.fromfile(f, dtype=PAYLOAD_DTYPE)
         if (recovered.size != payload.size
                 or recovered.tobytes() != payload.tobytes(order="C")):
             raise ValueError("Payload verification failed")
@@ -152,9 +151,9 @@ def write_dat(array, output_path, *, time_start, payload_layout="channel-sample"
     finally:
         tmp_path.unlink(missing_ok=True)
     return dict(output=str(output_path.resolve()), channels=int(array.shape[0]),
-                samples=int(array.shape[1]), payload_dtype="np.int16",
+                samples=int(array.shape[1]), payload_dtype="np.float32",
                 payload_byte_order=sys.byteorder, payload_layout=payload_layout,
-                fractional_values_truncated=fractional_count, header_bytes=HEADER_SIZE,
+                header_bytes=HEADER_SIZE,
                 file_bytes=HEADER_SIZE + payload.nbytes, channel_count=CHANNEL_COUNT,
                 time_start=time_start, time_interval=2.0, channel_interval=0.815)
 
